@@ -2,6 +2,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import ru.tinkoff.piapi.contract.v1.*;
 import ru.tinkoff.piapi.core.InvestApi;
+import ru.tinkoff.piapi.core.SandboxService;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -83,56 +84,69 @@ public class Bot {
                 .collect(Collectors.toList());
     }
 
-    public static void stopOrdersServiceExample(InvestApi api, String figi) {
-
-        //Выставляем стоп-заявку
-        var accounts = api.getUserService().getAccountsSync();
-        var mainAccount = accounts.get(0).getId();
-
-        var lastPrice = api.getMarketDataService().getLastPricesSync(List.of(figi)).get(0).getPrice();
-        var minPriceIncrement = api.getInstrumentsService().getInstrumentByFigiSync(figi).getMinPriceIncrement();
-        var stopPrice = Quotation.newBuilder().setUnits(lastPrice.getUnits() - minPriceIncrement.getUnits() * 100)
-                .setNano(lastPrice.getNano() - minPriceIncrement.getNano() * 100).build();
-        var stopOrderId = api.getStopOrdersService()
-                .postStopOrderGoodTillDateSync(figi, 1, stopPrice, stopPrice, StopOrderDirection.STOP_ORDER_DIRECTION_BUY,
-                        mainAccount, StopOrderType.STOP_ORDER_TYPE_STOP_LOSS, Instant.now().plus(1, ChronoUnit.DAYS));
-        log.info("выставлена стоп-заявка. id: {}", stopOrderId);
-
-        //Получаем список стоп-заявок и смотрим, что наша заявка в ней есть
-        var stopOrders = api.getStopOrdersService().getStopOrdersSync(mainAccount);
-        stopOrders.stream().filter(el -> el.getStopOrderId().equals(stopOrderId)).findAny().orElseThrow();
-
-        //Отменяем созданную стоп-заявку
-        api.getStopOrdersService().cancelStopOrder(mainAccount, stopOrderId);
-        log.info("стоп заявка с id {} отменена", stopOrderId);
-    }
-
-    public static void ordersServiceExample(InvestApi api, String figi) {
+    public static void ordersService(InvestApi api, String figi, String mainAccount, OrderDirection direction) {
         //Выставляем заявку
-        var accounts = api.getUserService().getAccountsSync();
-        var mainAccount = accounts.get(0).getId();
+
+        //var accounts = api.getUserService().getAccountsSync();
+        var service = api.getSandboxService();
+        //var orderService = api.getSandboxService().pos
+        //var accounts =  service.getAccountsSync();
+        //var mainAccount = accounts.get(0).getId();
 
         var lastPrice = api.getMarketDataService().getLastPricesSync(List.of(figi)).get(0).getPrice();
+        log.info("lastPrice = {}", lastPrice);
         var minPriceIncrement = api.getInstrumentsService().getInstrumentByFigiSync(figi).getMinPriceIncrement();
-        var price = Quotation.newBuilder().setUnits(lastPrice.getUnits() - minPriceIncrement.getUnits() * 100)
-                .setNano(lastPrice.getNano() - minPriceIncrement.getNano() * 100).build();
+        log.info("minPriceIncrement = {}", minPriceIncrement);
+        var price = Quotation.newBuilder().setUnits(lastPrice.getUnits() - minPriceIncrement.getUnits() * 10)
+                .setNano(lastPrice.getNano() - minPriceIncrement.getNano() * 10).build();
+        log.info("price = {}", price);
 
         //Выставляем заявку на покупку по лимитной цене
-        var orderId = api.getOrdersService()
-                .postOrderSync(figi, 1, price, OrderDirection.ORDER_DIRECTION_BUY, mainAccount, OrderType.ORDER_TYPE_LIMIT,
-                        UUID.randomUUID().toString()).getOrderId();
-
-        //Получаем список активных заявок, проверяем наличие нашей заявки в списке
-        var orders = api.getOrdersService().getOrdersSync(mainAccount);
-        if (orders.stream().anyMatch(el -> orderId.equals(el.getOrderId()))) {
-            log.info("заявка с id {} есть в списке активных заявок", orderId);
-        }
-
-        //Отменяем заявку
-        api.getOrdersService().cancelOrder(mainAccount, orderId);
+        var orderId = service//api.getOrdersService()
+                .postOrderSync(
+                        figi,
+                        1,
+                        price,
+                        direction,
+                        mainAccount,
+                        OrderType.ORDER_TYPE_LIMIT,
+                        UUID.randomUUID().toString()
+                ).getOrderId();
+        log.info("OrderId = {}", orderId);
     }
 
-    public static void instrumentsServiceExample(InvestApi api) {
+    public static void stopOrder(InvestApi api, String orderId){
+        var service = getService(api);
+        var mainAccount = getAccount(service);
+        service.cancelOrder(mainAccount, orderId);
+    }
+
+    public static SandboxService getService(InvestApi api){
+        return api.getSandboxService();
+    }
+
+    public static String getAccount(SandboxService service) {
+        var accounts =  service.getAccountsSync();
+        var mainAccount = accounts.get(0).getId();
+        return mainAccount;
+    }
+
+    public static void listOrders(InvestApi api, String mainAccount){
+        var service = getService(api);
+        //var mainAccount = getAccount(service);
+        log.info("Account = {}", mainAccount);
+        //Получаем список активных заявок, проверяем наличие нашей заявки в списке
+        var orders = service.getOrdersSync(mainAccount);
+        log.info("Count orders: " + orders.size());
+        for (int i = 0; i < orders.size(); i++) {
+            var order = orders.get(i);
+            var figi = order.getFigi();
+            var orderId = order.getOrderId();
+            var dir = order.getDirection().name();
+            log.info("Figi = {}, OrderId = {}, dir = {}, ", figi , orderId, dir);
+        }
+    }
+    public static void instrumentsService(InvestApi api) {
         var bonds = api.getInstrumentsService().getTradableBondsSync();
         var futures = api.getInstrumentsService().getTradableFuturesSync();
         log.info("Список Bonds");
@@ -149,14 +163,16 @@ public class Bot {
         }
     }
 
-    public static void usersServiceExample(InvestApi api) {
-        //Получаем список аккаунтов и распечатываем их с указанием привилегий токена
-        var accounts = api.getUserService().getAccountsSync();
+    public static void usersService(InvestApi api) {
+        var service = getService(api);
+        var accounts = service.getAccountsSync();
         var mainAccount = accounts.get(0);
+
         for (Account account : accounts) {
-            log.info("account id: {}, access level: {}", account.getId(), account.getAccessLevel().name());
+          log.info("account id: {}, access level: {}", account.getId(), account.getAccessLevel().name());
         }
 
+        if (api.isSandboxMode()) return;
         //Получаем и печатаем информацию о текущих лимитах пользователя
         var tariff = api.getUserService().getUserTariffSync();
         log.info("stream type: marketdata, stream limit: {}", tariff.getStreamLimitsList().get(0).getLimit());
